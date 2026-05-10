@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Chess, Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { useSocket } from "./SocketProvider";
@@ -17,23 +17,37 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
   const [gameStarted, setGameStarted] = useState(false);
   const [status, setStatus] = useState("Choose a mode to start playing!");
   const [copied, setCopied] = useState(false);
+  const [hasRoomParam, setHasRoomParam] = useState(false);
+  const autoJoinedRef = useRef(false);
 
   // Click-to-move state
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [highlightSquares, setHighlightSquares] = useState<Record<string, React.CSSProperties>>({});
 
-  // Generate room ID from URL or random
+  // Read room from URL on first load
   useEffect(() => {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       const roomParam = params.get("room");
       if (roomParam) {
         setRoomId(roomParam);
+        setHasRoomParam(true);
       } else {
         setRoomId(Math.random().toString(36).substring(2, 8));
       }
     }
   }, []);
+
+  // Auto-join if opened via invite link (?room=xxx) once socket connects
+  useEffect(() => {
+    if (hasRoomParam && isConnected && socket && !autoJoinedRef.current && mode === "none") {
+      autoJoinedRef.current = true;
+      setMode("online");
+      socket.emit("join_game", { roomId });
+      if (onRoomJoin) onRoomJoin(roomId);
+      setStatus("Joining room from invite link...");
+    }
+  }, [hasRoomParam, isConnected, socket, roomId, mode, onRoomJoin]);
 
   // Socket listeners for online mode
   useEffect(() => {
@@ -153,7 +167,6 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
     return styles;
   }
 
-  // Can the current user interact with the board?
   function canInteract(): boolean {
     if (game.isGameOver()) return false;
     if (mode === "practice") return true;
@@ -161,7 +174,6 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
     return false;
   }
 
-  // Does the piece on this square belong to the current player?
   function isOwnPiece(square: string): boolean {
     const piece = game.get(square as Square);
     if (!piece) return false;
@@ -238,7 +250,7 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
   return (
     <div className="flex flex-col items-center gap-5 p-4 w-full max-w-2xl mx-auto">
 
-      {/* ── Mode Selector (shown before joining) ── */}
+      {/* ── Mode Selector (shown only when no mode chosen and no room param) ── */}
       {mode === "none" && (
         <div className="glass-panel p-6 w-full flex flex-col items-center gap-5">
           <h2 className="text-2xl font-bold">♟️ Ready to Play?</h2>
@@ -246,6 +258,18 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
             Choose <strong>Practice</strong> to play on this device (both sides), or{" "}
             <strong>Play Online</strong> to challenge a friend in real-time.
           </p>
+
+          {/* Room code input */}
+          <div className="flex items-center gap-2 w-full max-w-sm">
+            <input
+              type="text"
+              placeholder="Enter or paste Room Code"
+              className="flex-1 px-3 py-2 rounded-md border border-[var(--panel-border)] bg-background text-foreground text-sm text-center font-mono"
+              value={roomId}
+              onChange={(e) => setRoomId(e.target.value)}
+            />
+          </div>
+
           <div className="flex gap-3 w-full max-w-sm">
             <button
               onClick={startPractice}
@@ -261,8 +285,13 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
               <Play size={18} /> Play Online
             </button>
           </div>
+
           {!isConnected && (
-            <p className="text-xs text-yellow-400">⚠️ Connecting to server… Online play will be available once connected.</p>
+            <p className="text-xs text-yellow-400 text-center">
+              ⚠️ Connecting to server… Online play will be available once connected.
+              <br />
+              You can use <strong>Practice</strong> mode right away!
+            </p>
           )}
         </div>
       )}
@@ -351,6 +380,12 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
                   Copy the <strong>Invite Link</strong> above and send it to your friend. The game
                   starts when they open it.
                 </p>
+                <button
+                  onClick={() => { setMode("none"); setGameStarted(false); }}
+                  className="mt-4 text-xs underline opacity-60 hover:opacity-100"
+                >
+                  ← Go back
+                </button>
               </div>
             </div>
           )}
@@ -366,7 +401,7 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
             <p>
               <strong>Tap</strong> one of your pieces — dots will appear on every square it can move
               to. Then <strong>tap</strong> a dot to make the move. Red circles mean you can capture
-              an opponent's piece there.
+              an opponent&apos;s piece there.
             </p>
           </div>
         </div>
