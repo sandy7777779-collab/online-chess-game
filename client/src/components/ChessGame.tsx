@@ -6,7 +6,7 @@ import { Chessboard } from "react-chessboard";
 import { io, Socket } from "socket.io-client";
 import { Copy, Check } from "lucide-react";
 
-const SOCKET_SERVER_URL = "http://localhost:3001";
+const SOCKET_SERVER_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
 
 export default function ChessGame() {
   const [socket, setSocket] = useState<Socket | null>(null);
