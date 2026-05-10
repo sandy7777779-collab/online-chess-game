@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  
+  /* Default Theme (Wood) */
+  --board-light: #f0d9b5;
+  --board-dark: #b58863;
+  --panel-bg: #f3f4f6;
+  --panel-border: #e5e7eb;
+}
+
+[data-theme='dark'] {
+  --background: #171717;
+  --foreground: #ededed;
+  
+  --board-light: #739552;
+  --board-dark: #ebecd0;
+  --panel-bg: #262626;
+  --panel-border: #404040;
+}
+
+[data-theme='neon'] {
+  --background: #0f172a;
+  --foreground: #38bdf8;
+  
+  --board-light: #334155;
+  --board-dark: #94a3b8;
+  --panel-bg: #1e293b;
+  --panel-border: #38bdf8;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Base custom styles for our layout */
+.glass-panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+}
