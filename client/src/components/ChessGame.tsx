@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Chess, Square } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { useSocket } from "./SocketProvider";
-import { Copy, Check, Users, Play, Monitor } from "lucide-react";
+import { Copy, Check, Users, Play, Monitor, Move } from "lucide-react";
 
 type GameMode = "none" | "practice" | "online";
 
@@ -20,7 +20,7 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
   const [hasRoomParam, setHasRoomParam] = useState(false);
   const autoJoinedRef = useRef(false);
 
-  // Click-to-move state
+  // Highlight/selection state
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [highlightSquares, setHighlightSquares] = useState<Record<string, React.CSSProperties>>({});
 
@@ -58,13 +58,13 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
       if (data.color === "spectator") {
         setStatus("Room is full. You are spectating.");
       } else {
-        setStatus(`You are ${data.color === "w" ? "⬜ White" : "⬛ Black"}. Waiting for opponent...`);
+        setStatus(`You joined as ${data.color === "w" ? "White" : "Black"}. Waiting for opponent...`);
       }
     };
 
     const onGameStart = () => {
       setGameStarted(true);
-      setStatus("🟢 Game started! Tap a piece to see its moves.");
+      setStatus("Game started! White to move.");
     };
 
     const onMoveReceived = (move: any) => {
@@ -102,7 +102,7 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
         else if (game.isStalemate()) setStatus("🤝 Stalemate!");
       } else {
         const turn = game.turn() === "w" ? "White" : "Black";
-        setStatus(`🟢 ${turn}'s turn — tap a ${turn.toLowerCase()} piece`);
+        setStatus(`🟢 ${turn}'s turn — tap or drag a ${turn.toLowerCase()} piece`);
       }
       return;
     }
@@ -118,7 +118,7 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
     } else {
       const isMyTurn = game.turn() === playerColor;
       const turnLabel = game.turn() === "w" ? "White" : "Black";
-      setStatus(isMyTurn ? `🟢 Your turn (${turnLabel}). Tap a piece!` : `⏳ Waiting for ${turnLabel} to move...`);
+      setStatus(isMyTurn ? `🟢 Your turn (${turnLabel}). Tap or drag!` : `⏳ Waiting for ${turnLabel} to move...`);
     }
   }, [game, gameStarted, playerColor, mode]);
 
@@ -138,7 +138,7 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
     }
   }, [game, mode, roomId, playerColor]);
 
-  // ───── helpers ─────
+  // ───── Logic Helpers ─────
 
   function clearHighlights() {
     setSelectedSquare(null);
@@ -147,10 +147,8 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
 
   function buildHighlights(square: string) {
     const moves = game.moves({ square: square as Square, verbose: true });
-    if (moves.length === 0) return {};
-
     const styles: Record<string, React.CSSProperties> = {};
-    styles[square] = { background: "rgba(255, 255, 0, 0.45)" };
+    styles[square] = { background: "rgba(255, 255, 0, 0.45)" }; // selected
 
     for (const m of moves) {
       const targetPiece = game.get(m.to as Square);
@@ -159,50 +157,68 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
 
       styles[m.to] = {
         background: isCapture
-          ? "radial-gradient(circle, rgba(255,50,50,0.55) 80%, transparent 80%)"
-          : "radial-gradient(circle, rgba(0,0,0,0.22) 22%, transparent 22%)",
+          ? "radial-gradient(circle, rgba(255,50,50,0.6) 80%, transparent 80%)"
+          : "radial-gradient(circle, rgba(0,0,0,0.25) 22%, transparent 22%)",
         borderRadius: "50%",
       };
     }
     return styles;
   }
 
-  function canInteract(): boolean {
+  const canInteract = useCallback((): boolean => {
     if (game.isGameOver()) return false;
     if (mode === "practice") return true;
     if (mode === "online" && gameStarted && game.turn() === playerColor && playerColor !== "spectator") return true;
     return false;
-  }
+  }, [game, mode, gameStarted, playerColor]);
 
-  function isOwnPiece(square: string): boolean {
+  const isOwnPiece = useCallback((square: string): boolean => {
     const piece = game.get(square as Square);
     if (!piece) return false;
     if (mode === "practice") return piece.color === game.turn();
     return piece.color === playerColor;
-  }
+  }, [game, mode, playerColor]);
 
-  // ───── click handler ─────
+  // ───── Core Move Execution Logic ─────
+  const makeMove = useCallback((source: string, target: string): boolean => {
+    if (!canInteract()) return false;
 
+    const gameCopy = new Chess(game.fen());
+    try {
+      const move = gameCopy.move({
+        from: source,
+        to: target,
+        promotion: "q", // automatically promote to queen for simplicity
+      });
+
+      if (move) {
+        setGame(gameCopy);
+        clearHighlights();
+        if (mode === "online" && socket) {
+          socket.emit("move", { roomId, move });
+        }
+        return true;
+      }
+    } catch (err) {
+      // Not a legal move
+    }
+    return false;
+  }, [game, canInteract, mode, socket, roomId]);
+
+  // ───── Event Handlers ─────
+
+  // Handler for Tap-to-move
   function handleSquareClick(square: string) {
     if (!canInteract()) return;
 
-    // If a piece is already selected, try to move there
+    // If a square is already selected and we click a DIFFERENT square, try to move there
     if (selectedSquare && selectedSquare !== square) {
-      const copy = new Chess(game.fen());
-      try {
-        const move = copy.move({ from: selectedSquare, to: square, promotion: "q" });
-        if (move) {
-          setGame(copy);
-          clearHighlights();
-          if (mode === "online" && socket) socket.emit("move", { roomId, move });
-          return;
-        }
-      } catch {
-        // Not a valid move — fall through to re-select
-      }
+      const success = makeMove(selectedSquare, square);
+      if (success) return;
+      // If move failed but clicked on another piece of our own color, select that one instead.
     }
 
-    // Select a new piece
+    // Select new piece
     if (isOwnPiece(square)) {
       setSelectedSquare(square);
       setHighlightSquares(buildHighlights(square));
@@ -211,14 +227,23 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
     }
   }
 
-  // ───── actions ─────
+  // Handler for Drag-and-Drop
+  function handlePieceDrop(sourceSquare: string, targetSquare: string): boolean {
+    if (!canInteract()) return false;
+    
+    // Ensure they are dragging their own piece
+    if (!isOwnPiece(sourceSquare)) return false;
+
+    return makeMove(sourceSquare, targetSquare);
+  }
+
+  // ───── Action Handlers ─────
 
   function startPractice() {
     setMode("practice");
     setPlayerColor("w");
     setGame(new Chess());
     clearHighlights();
-    setStatus("🟢 White's turn — tap a white piece");
   }
 
   function joinOnline() {
@@ -232,9 +257,6 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
   function resetGame() {
     setGame(new Chess());
     clearHighlights();
-    if (mode === "practice") {
-      setStatus("🟢 White's turn — tap a white piece");
-    }
   }
 
   const copyInviteLink = () => {
@@ -245,74 +267,70 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // ───── render ─────
+  // ───── Render ─────
 
   return (
     <div className="flex flex-col items-center gap-5 p-4 w-full max-w-2xl mx-auto">
 
-      {/* ── Mode Selector (shown only when no mode chosen and no room param) ── */}
+      {/* ── Mode Selector Screen ── */}
       {mode === "none" && (
-        <div className="glass-panel p-6 w-full flex flex-col items-center gap-5">
-          <h2 className="text-2xl font-bold">♟️ Ready to Play?</h2>
-          <p className="text-sm opacity-70 text-center max-w-md">
-            Choose <strong>Practice</strong> to play on this device (both sides), or{" "}
-            <strong>Play Online</strong> to challenge a friend in real-time.
+        <div className="glass-panel p-6 w-full flex flex-col items-center gap-5 animate-in fade-in duration-300">
+          <h2 className="text-2xl font-bold tracking-tight text-center">♟️ Welcome to Chess</h2>
+          <p className="text-sm opacity-75 text-center max-w-md">
+            Challenge a friend in a <strong>Live Match</strong> or sharpen your skills in <strong>Practice Mode</strong>.
           </p>
 
-          {/* Room code input */}
-          <div className="flex items-center gap-2 w-full max-w-sm">
-            <input
-              type="text"
-              placeholder="Enter or paste Room Code"
-              className="flex-1 px-3 py-2 rounded-md border border-[var(--panel-border)] bg-background text-foreground text-sm text-center font-mono"
-              value={roomId}
-              onChange={(e) => setRoomId(e.target.value)}
-            />
-          </div>
+          <div className="w-full max-w-sm space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold uppercase tracking-wide opacity-60 px-1">Match Room Code</label>
+              <input
+                type="text"
+                placeholder="Enter custom code or leave as is"
+                className="w-full px-4 py-3 rounded-lg border border-[var(--panel-border)] bg-background text-foreground text-lg text-center font-mono shadow-inner focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                value={roomId}
+                onChange={(e) => setRoomId(e.target.value)}
+              />
+            </div>
 
-          <div className="flex gap-3 w-full max-w-sm">
-            <button
-              onClick={startPractice}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg transition-colors"
-            >
-              <Monitor size={18} /> Practice
-            </button>
-            <button
-              onClick={joinOnline}
-              disabled={!isConnected}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors disabled:opacity-50"
-            >
-              <Play size={18} /> Play Online
-            </button>
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={startPractice}
+                className="flex-1 flex flex-col items-center justify-center gap-2 px-4 py-5 bg-background/50 hover:bg-emerald-600/10 border border-emerald-600/20 hover:border-emerald-500/50 rounded-xl transition-all group"
+              >
+                <Monitor size={24} className="text-emerald-500 group-hover:scale-110 transition-transform" />
+                <span className="font-semibold text-emerald-500 text-sm">Practice</span>
+              </button>
+              <button
+                onClick={joinOnline}
+                disabled={!isConnected}
+                className="flex-1 flex flex-col items-center justify-center gap-2 px-4 py-5 bg-blue-600 hover:bg-blue-500 text-white border border-blue-400/20 rounded-xl transition-all shadow-lg shadow-blue-600/20 group disabled:opacity-50 disabled:pointer-events-none"
+              >
+                <Play size={24} className="group-hover:translate-x-0.5 transition-transform" />
+                <span className="font-semibold text-sm">Play Online</span>
+              </button>
+            </div>
           </div>
 
           {!isConnected && (
-            <p className="text-xs text-yellow-400 text-center">
-              ⚠️ Connecting to server… Online play will be available once connected.
-              <br />
-              You can use <strong>Practice</strong> mode right away!
-            </p>
+            <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 flex items-start gap-2.5 text-xs text-yellow-300 max-w-sm">
+              <div className="h-1.5 w-1.5 rounded-full bg-yellow-500 mt-1 animate-pulse flex-shrink-0" />
+              <span>Connecting to backend server... You can start <strong>Practice Mode</strong> immediately while we connect.</span>
+            </div>
           )}
         </div>
       )}
 
-      {/* ── Status Bar (shown after joining) ── */}
+      {/* ── Game UI Header ── */}
       {mode !== "none" && (
-        <div className="glass-panel p-5 w-full flex flex-col md:flex-row justify-between items-center gap-4">
+        <div className="glass-panel p-4 w-full flex flex-col md:flex-row justify-between items-center gap-4 border-b-2 border-blue-500/10">
           <div className="flex-1">
-            <h2 className="text-xl font-bold flex items-center gap-2">
-              <Users size={20} />
+            <h2 className="text-sm font-bold uppercase tracking-wider opacity-50 flex items-center gap-1.5 mb-1">
+              {mode === "practice" ? <Monitor size={14} /> : <Users size={14} />}
               {mode === "practice" ? "Practice Mode" : "Live Match"}
             </h2>
-            <p
-              className={`text-sm mt-1 font-semibold ${
-                game.isGameOver()
-                  ? "text-orange-400"
-                  : canInteract()
-                  ? "text-green-400"
-                  : "text-yellow-400"
-              }`}
-            >
+            <p className={`text-base font-bold flex items-center gap-2 ${
+              game.isGameOver() ? "text-orange-400" : canInteract() ? "text-green-400" : "text-foreground"
+            }`}>
               {status}
             </p>
           </div>
@@ -320,35 +338,30 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
           {mode === "practice" && (
             <button
               onClick={resetGame}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-md transition-colors"
+              className="px-4 py-2 bg-secondary hover:bg-secondary/80 border border-[var(--panel-border)] text-foreground text-sm font-semibold rounded-lg transition-colors"
             >
-              New Game
+              Reset Board
             </button>
           )}
 
           {mode === "online" && (
-            <div className="flex flex-col items-end gap-2">
+            <div className="flex flex-col items-center md:items-end gap-2 w-full md:w-auto">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-medium uppercase tracking-wider opacity-60">
-                  Room: {roomId}
-                </span>
+                <span className="text-xs font-mono opacity-70 px-2 py-1 bg-background/50 rounded">Room: {roomId}</span>
                 <button
                   onClick={copyInviteLink}
-                  className="flex items-center gap-1 px-2 py-1 bg-[var(--panel-border)] hover:opacity-80 rounded text-xs font-semibold"
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md text-xs font-bold shadow-md transition-all active:scale-95"
                 >
-                  {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
-                  {copied ? "Copied" : "Invite Link"}
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
+                  {copied ? "Copied!" : "Invite Friend"}
                 </button>
               </div>
               {playerColor !== "spectator" && (
-                <span
-                  className={`text-xs px-3 py-1 rounded-full font-bold shadow-sm ${
-                    playerColor === "w"
-                      ? "bg-white text-black border border-gray-300"
-                      : "bg-gray-900 text-white border border-gray-600"
-                  }`}
-                >
-                  Playing as {playerColor === "w" ? "⬜ White" : "⬛ Black"}
+                <span className={`text-xs px-3 py-1 rounded-full font-bold flex items-center gap-1.5 shadow-sm border ${
+                  playerColor === "w" ? "bg-white text-black border-gray-200" : "bg-neutral-900 text-white border-neutral-700"
+                }`}>
+                  <span className={`h-2.5 w-2.5 rounded-full ${playerColor === "w" ? "bg-neutral-200" : "bg-neutral-700"} border border-current`} />
+                  Playing as {playerColor === "w" ? "White" : "Black"}
                 </span>
               )}
             </div>
@@ -356,54 +369,58 @@ export default function ChessGame({ onRoomJoin }: { onRoomJoin?: (id: string) =>
         </div>
       )}
 
-      {/* ── Board ── */}
+      {/* ── Main Chess Board ── */}
       {mode !== "none" && (
-        <div className="w-full aspect-square rounded-lg overflow-hidden shadow-2xl bg-[var(--panel-border)] relative">
+        <div className="w-full aspect-square rounded-xl overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.3)] border border-[var(--panel-border)] relative bg-neutral-800">
           {/* @ts-ignore */}
           <Chessboard
             position={game.fen()}
             onSquareClick={handleSquareClick}
+            onPieceDrop={handlePieceDrop}
             customSquareStyles={highlightSquares}
             boardOrientation={mode === "online" && playerColor === "b" ? "black" : "white"}
             customDarkSquareStyle={{ backgroundColor: "var(--board-dark)" }}
             customLightSquareStyle={{ backgroundColor: "var(--board-light)" }}
-            arePiecesDraggable={false}
+            arePiecesDraggable={true}
+            animationDuration={250}
           />
 
-          {/* Overlay: waiting for opponent (online only) */}
+          {/* Waiting Overlay */}
           {mode === "online" && !gameStarted && (
-            <div className="absolute inset-0 bg-background/60 backdrop-blur-sm flex items-center justify-center z-10">
-              <div className="glass-panel p-6 flex flex-col items-center shadow-2xl max-w-xs">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mb-4" />
-                <p className="font-bold text-lg text-center">Waiting for opponent…</p>
-                <p className="text-sm opacity-70 mt-2 text-center">
-                  Copy the <strong>Invite Link</strong> above and send it to your friend. The game
-                  starts when they open it.
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-md flex items-center justify-center z-20">
+              <div className="glass-panel p-7 flex flex-col items-center shadow-2xl max-w-xs text-center border-blue-500/30">
+                <div className="relative mb-5">
+                  <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-purple-600 rounded-full blur animate-pulse opacity-75"></div>
+                  <div className="relative bg-background rounded-full p-3">
+                     <div className="animate-spin rounded-full h-8 w-8 border-2 border-blue-500 border-t-transparent" />
+                  </div>
+                </div>
+                <h3 className="font-bold text-xl mb-2">Waiting for opponent</h3>
+                <p className="text-sm opacity-75 mb-5 leading-relaxed">
+                  Send the **Invite Link** at the top to your friend. Once they open it, the game will automatically start.
                 </p>
-                <button
-                  onClick={() => { setMode("none"); setGameStarted(false); }}
-                  className="mt-4 text-xs underline opacity-60 hover:opacity-100"
-                >
-                  ← Go back
-                </button>
+                <div className="flex flex-col w-full gap-2">
+                   <button onClick={copyInviteLink} className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-semibold shadow-lg flex items-center justify-center gap-2">
+                     <Copy size={16}/> {copied ? "Copied!" : "Copy Invite Link"}
+                   </button>
+                   <button
+                     onClick={() => { setMode("none"); setGameStarted(false); }}
+                     className="text-xs text-foreground/60 hover:text-foreground underline transition-colors py-2"
+                   >
+                     Go back to main menu
+                   </button>
+                </div>
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* ── How-to-play hint ── */}
+      {/* ── How-to-play Hint ── */}
       {mode !== "none" && !game.isGameOver() && (
-        <div className="glass-panel p-4 w-full text-sm opacity-80 flex items-start gap-3">
-          <span className="text-lg">💡</span>
-          <div>
-            <p className="font-semibold mb-1">How to play</p>
-            <p>
-              <strong>Tap</strong> one of your pieces — dots will appear on every square it can move
-              to. Then <strong>tap</strong> a dot to make the move. Red circles mean you can capture
-              an opponent&apos;s piece there.
-            </p>
-          </div>
+        <div className="w-full text-xs md:text-sm opacity-75 text-center flex items-center justify-center gap-2 p-2">
+          <Move size={16} className="opacity-60" />
+          <span>You can either <strong>drag and drop</strong> pieces, OR <strong>tap to select and move</strong>.</span>
         </div>
       )}
     </div>
